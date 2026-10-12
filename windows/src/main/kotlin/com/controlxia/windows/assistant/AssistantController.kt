@@ -124,7 +124,9 @@ class AssistantController(
         timers.onFire = ::onAlert
         timers.restore()
         scope.launch { toolset.apps.warmUp() }
-        scope.launch(Dispatchers.IO) { (tts as? SapiTextToSpeech)?.prewarm() }
+        scope.launch(Dispatchers.IO) {
+            runCatching { (tts as? SapiTextToSpeech)?.prewarm() }.onFailure { Log.e("Voz de Windows", it) }
+        }
         applyHotkey()
         Autostart.apply(settings.current.autostart)?.let { Log.i(it) }
         reloadVoice()

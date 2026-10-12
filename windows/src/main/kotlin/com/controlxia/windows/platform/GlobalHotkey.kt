@@ -1,5 +1,6 @@
 package com.controlxia.windows.platform
 
+import com.controlxia.windows.config.AppPaths
 import com.sun.jna.platform.win32.User32
 import com.sun.jna.platform.win32.WinDef
 import com.sun.jna.platform.win32.WinUser
@@ -19,14 +20,22 @@ class GlobalHotkey(private val onPressed: () -> Unit) {
      */
     fun register(combo: String): String? {
         unregister()
+        if (!AppPaths.isWindows) return "El atajo global solo funciona en Windows"
         val parsed = parse(combo) ?: return "Atajo inválido: \"$combo\". Ejemplo: Ctrl+Alt+X"
         var error: String? = null
         val ready = java.util.concurrent.CountDownLatch(1)
         thread = Thread({
-            threadId = Win32.currentThreadId()
-            val ok = User32.INSTANCE.RegisterHotKey(null, HOTKEY_ID, parsed.first or MOD_NOREPEAT, parsed.second)
-            if (!ok) error = "No se pudo registrar $combo: otra aplicación ya lo usa."
-            ready.countDown()
+            var ok = false
+            try {
+                threadId = Win32.currentThreadId()
+                ok = User32.INSTANCE.RegisterHotKey(null, HOTKEY_ID, parsed.first or MOD_NOREPEAT, parsed.second)
+                if (!ok) error = "No se pudo registrar $combo: otra aplicación ya lo usa."
+            } catch (e: Throwable) {
+                error = "No se pudo registrar el atajo: ${e.message}"
+            } finally {
+                // Siempre se libera a quien espera, aunque falle el registro.
+                ready.countDown()
+            }
             if (!ok) return@Thread
             val msg = WinUser.MSG()
             while (User32.INSTANCE.GetMessage(msg, null, 0, 0) > 0) {

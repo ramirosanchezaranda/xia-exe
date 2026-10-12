@@ -144,10 +144,10 @@ tasks.register<Zip>("portableWindowsZip") {
         from(tasks.named("jar")) { into("lib") }
         from(configurations.named("runtimeClasspath")) { into("lib") }
         from(project.file("src/portable"))
-        from(jreZip.map { zipTree(it) }) {
-            // El zip trae una carpeta "jdk-17…-jre/": se renombra a "runtime/".
-            eachFile { path = path.replaceFirst(Regex("^[^/]+/"), "runtime/") }
-            includeEmptyDirs = false
-        }
     }
+    from(jreZip.map { zipTree(it) }) {
+        // El zip trae una carpeta "jdk-17…-jre/": queda como ControlXIA/runtime/.
+        eachFile { path = path.replaceFirst(Regex("^[^/]+/"), "ControlXIA/runtime/") }
+    }
+    includeEmptyDirs = false
 }
