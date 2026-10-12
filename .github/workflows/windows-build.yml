@@ -1,0 +1,29 @@
+name: Windows build
+
+# Compila, corre los tests y arma el instalador .exe en un runner de Windows.
+# Nota: si GitHub Actions está bloqueado por facturación en la cuenta, este
+# workflow no llega a correr; ver docs/COMPILAR.md para hacerlo en la PC.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Tests
+        run: ./gradlew.bat :brain:test :windows:test --no-daemon
+      - name: Instalador
+        run: ./gradlew.bat :desktop:packageExe --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ControlXIA-instalador
+          path: desktop/build/compose/binaries/main/exe/*.exe
