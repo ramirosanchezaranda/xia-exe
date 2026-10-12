@@ -1,3 +1,4 @@
+import java.security.MessageDigest
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -19,10 +20,14 @@ kotlin {
 
 val appVersion = "0.1.0"
 
+// Con -PtargetOs=windows se usan las librerías nativas de Windows aunque se
+// compile en otro sistema (para armar la versión portable desde Linux).
+val targetWindows = providers.gradleProperty("targetOs").orNull == "windows"
+
 dependencies {
     implementation(project(":windows"))
 
-    implementation(compose.desktop.currentOs)
+    implementation(if (targetWindows) compose.desktop.windows_x64 else compose.desktop.currentOs)
     implementation(compose.material3)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
 
@@ -90,5 +95,59 @@ tasks.register<Exec>("signExe") {
             "/tr", "http://timestamp.digicert.com", "/td", "SHA256",
             exe.absolutePath,
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Versión portable para Windows: un .zip con Java incluido y un lanzador.
+// No necesita instalarse ni compilarse en Windows:
+//   ./gradlew :desktop:portableWindowsZip -PtargetOs=windows
+// ---------------------------------------------------------------------------
+
+val jreVersion = "17.0.16+8"
+// SHA-256 publicado por Adoptium para ese zip.
+val jreSha256 = "d35b05f4832215d8877d0dbf15c6370c854d7d5b812f890a9c0db8ad412a6bf2"
+val jreZip = layout.buildDirectory.file("jre/temurin-jre-$jreVersion-windows-x64.zip")
+
+val downloadWindowsJre by tasks.registering {
+    group = "distribution"
+    description = "Descarga el Java (Temurin JRE) para Windows x64"
+    outputs.file(jreZip)
+    doLast {
+        val file = jreZip.get().asFile
+        fun sha256(f: File) = MessageDigest.getInstance("SHA-256")
+            .digest(f.readBytes()).joinToString("") { "%02x".format(it) }
+        if (file.exists() && sha256(file) == jreSha256) return@doLast
+        file.parentFile.mkdirs()
+        val tag = jreVersion.replace("+", "%2B")
+        val name = "OpenJDK17U-jre_x64_windows_hotspot_${jreVersion.replace('+', '_')}.zip"
+        val url = "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-$tag/$name"
+        logger.lifecycle("Descargando $url")
+        uri(url).toURL().openStream().use { input -> file.outputStream().use { output -> input.copyTo(output) } }
+        check(sha256(file) == jreSha256) {
+            file.delete()
+            "El Java descargado no coincide con el checksum de Adoptium"
+        }
+    }
+}
+
+tasks.register<Zip>("portableWindowsZip") {
+    group = "distribution"
+    description = "Arma ControlXIA portable para Windows (zip con Java incluido)"
+    dependsOn(tasks.named("jar"), downloadWindowsJre)
+    doFirst {
+        check(targetWindows) { "Corré la tarea con -PtargetOs=windows" }
+    }
+    archiveFileName.set("ControlXIA-$appVersion-windows-portable.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("portable"))
+    into("ControlXIA") {
+        from(tasks.named("jar")) { into("lib") }
+        from(configurations.named("runtimeClasspath")) { into("lib") }
+        from(project.file("src/portable"))
+        from(jreZip.map { zipTree(it) }) {
+            // El zip trae una carpeta "jdk-17…-jre/": se renombra a "runtime/".
+            eachFile { path = path.replaceFirst(Regex("^[^/]+/"), "runtime/") }
+            includeEmptyDirs = false
+        }
     }
 }

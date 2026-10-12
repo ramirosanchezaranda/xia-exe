@@ -13,16 +13,21 @@ object Autostart {
     private const val RUN_KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Run"
     private const val VALUE = "ControlXIA"
 
-    /** Ejecutable instalado por jpackage; null al correr desde Gradle. */
-    val launcherPath: String? get() = System.getProperty("jpackage.app-path")
+    /**
+     * Comando de arranque: el .exe instalado por jpackage o, en la versión
+     * portable, el lanzador .vbs. Null al correr desde Gradle.
+     */
+    val launchCommand: String?
+        get() = System.getProperty("jpackage.app-path")?.let { "\"$it\" --tray" }
+            ?: System.getProperty("controlxia.launcher")?.let { "wscript.exe \"$it\" --tray" }
 
     /** Aplica la preferencia. Devuelve un mensaje si no se pudo. */
     fun apply(enabled: Boolean): String? {
         if (!AppPaths.isWindows) return "Solo disponible en Windows"
         return runCatching {
             if (enabled) {
-                val exe = launcherPath ?: return "El arranque automático funciona con la app instalada"
-                Advapi32Util.registrySetStringValue(WinReg.HKEY_CURRENT_USER, RUN_KEY, VALUE, "\"$exe\" --tray")
+                val command = launchCommand ?: return "El arranque automático funciona con la app instalada"
+                Advapi32Util.registrySetStringValue(WinReg.HKEY_CURRENT_USER, RUN_KEY, VALUE, command)
             } else if (Advapi32Util.registryValueExists(WinReg.HKEY_CURRENT_USER, RUN_KEY, VALUE)) {
                 Advapi32Util.registryDeleteValue(WinReg.HKEY_CURRENT_USER, RUN_KEY, VALUE)
             }

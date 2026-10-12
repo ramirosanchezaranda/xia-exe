@@ -1,0 +1,14 @@
+ControlXIA para Windows (portable)
+==================================
+
+1. Descomprimí esta carpeta donde quieras (por ejemplo en Documentos).
+2. Doble clic en ControlXIA.vbs para abrirlo. No hace falta instalar Java:
+   viene incluido en la carpeta "runtime".
+3. La primera vez se abre el asistente de configuración.
+
+Si no abre, usá ControlXIA-diagnostico.bat para ver el error.
+
+La opción "Arrancar con Windows" apunta a esta carpeta: si la movés, desactivala
+y volvé a activarla en Configuración > Asistente.
+
+Configuración e historial: %APPDATA%\ControlXIA

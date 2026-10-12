@@ -63,3 +63,16 @@ arriba.
   Configuración › Asistente.
 - **Error de Porcupine**: revisá el AccessKey y que el `.ppn` sea el de
   **Windows** (ver [PALABRA_PROPIA.md](PALABRA_PROPIA.md)).
+
+## Versión portable (sin instalar ni compilar en Windows)
+
+Se puede armar desde cualquier sistema, incluso Linux:
+
+```bash
+./gradlew :desktop:portableWindowsZip -PtargetOs=windows
+```
+
+Genera `desktop/build/portable/ControlXIA-x.y.z-windows-portable.zip` con la
+app, las librerías nativas de Windows y Java 17 (Temurin, verificado por
+SHA-256). En la PC se descomprime y se abre con doble clic en `ControlXIA.vbs`;
+`ControlXIA-diagnostico.bat` la abre con consola para ver errores.
