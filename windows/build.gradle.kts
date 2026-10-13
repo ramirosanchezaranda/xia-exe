@@ -23,9 +23,14 @@ dependencies {
     implementation("ai.picovoice:porcupine-java:3.0.5")
     // Voz a texto offline (y palabra de activación sin cuenta).
     implementation("com.alphacephei:vosk:0.3.45")
+    // Whisper local (whisper.cpp) para transcribir mejor sin internet.
+    implementation("io.github.givimad:whisper-jni:1.7.1")
+    // Subida de audio a Whisper en la nube (Groq, OpenAI).
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }
 
 tasks.test {

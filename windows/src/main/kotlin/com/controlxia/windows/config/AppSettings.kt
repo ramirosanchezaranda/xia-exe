@@ -3,6 +3,7 @@ package com.controlxia.windows.config
 import com.controlxia.brain.llm.LlmProviderType
 import com.controlxia.brain.tools.ActionCategory
 import com.controlxia.brain.tools.PermissionPolicy
+import com.controlxia.windows.voice.WhisperModel
 import kotlinx.serialization.Serializable
 
 /** Motor de palabra de activación. */
@@ -49,6 +50,23 @@ data class VoicePreferences(
     val volume: Int = 100,
 )
 
+/** Quién hace la transcripción final de cada frase. */
+@Serializable
+enum class SttEngine(val displayName: String) {
+    WHISPER_CLOUD("Whisper en la nube (Groq u OpenAI) · el más preciso"),
+    WHISPER_LOCAL("Whisper local · preciso y sin internet"),
+    VOSK("Vosk · rápido y sin internet, menos preciso"),
+}
+
+@Serializable
+data class SttPreferences(
+    val engine: SttEngine = SttEngine.WHISPER_CLOUD,
+    /** API compatible con OpenAI: Groq por defecto. */
+    val cloudBaseUrl: String = "https://api.groq.com/openai/v1",
+    val cloudModel: String = "whisper-large-v3-turbo",
+    val localModel: WhisperModel = WhisperModel.SMALL,
+)
+
 @Serializable
 data class WakePreferences(
     val engine: WakeEngineType = WakeEngineType.VOSK,
@@ -75,6 +93,7 @@ data class AppSettings(
     val voskModelPath: String = "",
     val llm: LlmPreferences = LlmPreferences(),
     val voice: VoicePreferences = VoicePreferences(),
+    val stt: SttPreferences = SttPreferences(),
     val permissions: Map<ActionCategory, PermissionPolicy> = emptyMap(),
     val historyEnabled: Boolean = true,
     /** Después de responder sigue escuchando sin la palabra de activación. */

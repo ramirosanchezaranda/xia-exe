@@ -23,6 +23,21 @@ class LlmConfigResolver(private val settings: SettingsRepository, private val se
         return LlmConfig(type, key, p.model, baseUrl.ifBlank { null }, p.effort.ifBlank { null })
     }
 
+    /**
+     * Key para Whisper en la nube: la propia si se cargó; si no, la de un
+     * proveedor del cerebro que use el mismo servidor (ej. la de Groq).
+     */
+    fun sttCloudKey(): String {
+        secrets.get(SecretStore.STT_CLOUD_KEY).takeIf { it.isNotBlank() }?.let { return it }
+        val host = hostOf(settings.current.stt.cloudBaseUrl) ?: return ""
+        return LlmProviderType.values().firstNotNullOfOrNull { type ->
+            val url = settings.current.llm.forType(type).baseUrl.ifBlank { type.defaultBaseUrl.orEmpty() }
+            secrets.get(SecretStore.llmKey(type)).takeIf { it.isNotBlank() && hostOf(url) == host }
+        }.orEmpty()
+    }
+
+    private fun hostOf(url: String): String? = runCatching { java.net.URI(url.trim()).host?.lowercase() }.getOrNull()
+
     /** Qué falta para poder usar [type], para mostrarlo en la UI. */
     fun missing(type: LlmProviderType): String? {
         val p = settings.current.llm.forType(type)

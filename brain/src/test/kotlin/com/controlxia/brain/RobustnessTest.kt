@@ -143,3 +143,39 @@ class RobustnessTest {
         assertEquals("No pude", reply.spoken)
     }
 }
+
+class SpeakableAndCapabilitiesTest {
+    @Test
+    fun `saca el markdown antes de hablar`() {
+        val raw = """
+            Abre el Bloc de notas, escribe:
+
+            **hola**
+
+            Después presiona **Ctrl + S**. Guardá en [Documentos](file:///C:/x).
+            - uno
+            1. dos
+            ```kotlin
+            codigo()
+            ```
+        """.trimIndent()
+        val spoken = com.controlxia.brain.agent.toSpeakable(raw)
+        assertFalse(spoken.contains("*"))
+        assertFalse(spoken.contains("```") || spoken.contains("codigo"))
+        assertTrue(spoken.contains("Después presiona Ctrl + S."))
+        assertTrue(spoken.contains("Guardá en Documentos."))
+        assertTrue(spoken.endsWith("uno. dos"), spoken)
+        assertEquals("Son las 10:30.", com.controlxia.brain.agent.toSpeakable("Son las 10:30."))
+    }
+
+    @Test
+    fun `sabe que modelos aceptan imagenes`() {
+        val caps = com.controlxia.brain.llm.ModelCapabilities
+        assertFalse(caps.supportsVision(LlmProviderType.OPENAI_COMPATIBLE, "openai/gpt-oss-20b"))
+        assertFalse(caps.supportsVision(LlmProviderType.OLLAMA, "qwen3:8b"))
+        assertTrue(caps.supportsVision(LlmProviderType.OLLAMA, "qwen2.5vl:7b"))
+        assertTrue(caps.supportsVision(LlmProviderType.ANTHROPIC, "claude-opus-5-5"))
+        assertTrue(caps.supportsVision(LlmProviderType.OPENAI, "gpt-4o-mini"))
+        assertTrue(caps.supportsVision(LlmProviderType.OPENAI_COMPATIBLE, "meta-llama/llama-4-scout-17b-16e-instruct"))
+    }
+}

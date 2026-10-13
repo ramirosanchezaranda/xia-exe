@@ -93,7 +93,7 @@ class Assistant(
                 memory.add(response.assistantMessage)
 
                 if (response.toolCalls.isEmpty()) {
-                    val spoken = response.text.trim().ifBlank { "Listo." }
+                    val spoken = toSpeakable(response.text).ifBlank { "Listo." }
                     return AssistantReply(spoken, actions)
                 }
 

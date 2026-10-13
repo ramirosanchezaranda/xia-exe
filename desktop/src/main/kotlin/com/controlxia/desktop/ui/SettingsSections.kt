@@ -31,7 +31,10 @@ import com.controlxia.brain.tools.PermissionPolicy
 import com.controlxia.windows.config.AppPaths
 import com.controlxia.windows.config.groupConversations
 import com.controlxia.windows.config.SecretStore
+import com.controlxia.windows.config.SttEngine
 import com.controlxia.windows.config.WakeEngineType
+import com.controlxia.windows.voice.WhisperModel
+import com.controlxia.windows.voice.WhisperModels
 import com.controlxia.windows.voice.PorcupineWakeWord
 import com.controlxia.windows.voice.VoiceInfo
 import com.controlxia.windows.voice.VoskModels
@@ -343,6 +346,8 @@ fun VoiceSection(app: AppContext) {
     fun updateVoice(transform: (com.controlxia.windows.config.VoicePreferences) -> com.controlxia.windows.config.VoicePreferences) =
         app.settings.update { it.copy(voice = transform(it.voice)) }
 
+    TranscriberEditor(app)
+
     SectionLabel("Voz de Windows")
     val list = voices
     if (list == null) {
@@ -368,6 +373,105 @@ fun VoiceSection(app: AppContext) {
     Button(onClick = { scope.launch { app.controller.testVoice() } }, modifier = Modifier.padding(top = 8.dp)) {
         Text("Probar voz")
     }
+}
+
+/** Quién transcribe lo que decís (Whisper en la nube, local o Vosk). */
+@Composable
+fun TranscriberEditor(app: AppContext) {
+    val s by app.settings.state.collectAsState()
+    val ui by app.controller.ui.collectAsState()
+    val scope = rememberCoroutineScope()
+    var testResult by remember { mutableStateOf<String?>(null) }
+    var testing by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf<Float?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var installedTick by remember { mutableStateOf(0) }
+
+    fun updateStt(transform: (com.controlxia.windows.config.SttPreferences) -> com.controlxia.windows.config.SttPreferences) =
+        app.settings.update { it.copy(stt = transform(it.stt)) }
+
+    SectionLabel("Reconocimiento de voz")
+    Hint("Vosk detecta la palabra de activación y cuándo terminaste de hablar; Whisper transcribe la frase con mucha más precisión.")
+    VSpace()
+    Dropdown(
+        label = "Transcripción final",
+        options = SttEngine.values().toList(),
+        selected = s.stt.engine,
+        display = { it.displayName },
+        onSelect = { v -> updateStt { it.copy(engine = v) } },
+    )
+    when (s.stt.engine) {
+        SttEngine.WHISPER_CLOUD -> {
+            OutlinedTextField(
+                value = s.stt.cloudBaseUrl,
+                onValueChange = { v -> updateStt { it.copy(cloudBaseUrl = v.trim()) } },
+                label = { Text("URL (Groq u OpenAI)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            )
+            OutlinedTextField(
+                value = s.stt.cloudModel,
+                onValueChange = { v -> updateStt { it.copy(cloudModel = v.trim()) } },
+                label = { Text("Modelo") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf(
+                    "Groq" to ("https://api.groq.com/openai/v1" to "whisper-large-v3-turbo"),
+                    "OpenAI" to ("https://api.openai.com/v1" to "gpt-4o-mini-transcribe"),
+                ).forEach { (name, preset) ->
+                    TextButton(onClick = { updateStt { it.copy(cloudBaseUrl = preset.first, cloudModel = preset.second) } }) {
+                        Text(name, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+            SecretField("API key (opcional)", app.secrets.get(SecretStore.STT_CLOUD_KEY)) {
+                app.secrets.set(SecretStore.STT_CLOUD_KEY, it)
+                app.controller.reloadTranscriber()
+            }
+            Hint("Si la dejás vacía se usa la key del cerebro que apunte al mismo servicio (por ejemplo, tu key de Groq). Solo se envía el audio de cada frase.")
+        }
+        SttEngine.WHISPER_LOCAL -> {
+            VSpace()
+            Dropdown(
+                label = "Modelo",
+                options = WhisperModel.values().toList(),
+                selected = s.stt.localModel,
+                display = { "${it.displayName} (${it.approxMb} MB)" },
+                onSelect = { v -> updateStt { it.copy(localModel = v) } },
+            )
+            val installed = remember(s.stt.localModel, installedTick) { WhisperModels.isInstalled(s.stt.localModel) }
+            if (installed) {
+                Hint("Modelo instalado: ${WhisperModels.file(s.stt.localModel).absolutePath}")
+            } else {
+                Button(enabled = progress == null, modifier = Modifier.padding(top = 8.dp), onClick = {
+                    error = null
+                    progress = 0f
+                    scope.launch {
+                        runCatching { WhisperModels.download(s.stt.localModel) { p -> progress = p } }
+                            .onSuccess { installedTick++; app.controller.reloadTranscriber() }
+                            .onFailure { error = "No se pudo descargar: ${it.message}" }
+                        progress = null
+                    }
+                }) { Text("Descargar modelo (${s.stt.localModel.approxMb} MB)") }
+                progress?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) }
+                error?.let { Hint(it, Warn) }
+            }
+            Hint("Con procesador solo, Small tarda 2–4 s por frase; Base es más rápido pero entiende menos.")
+        }
+        SttEngine.VOSK -> Hint("Solo Vosk: es instantáneo pero se equivoca bastante con frases largas.")
+    }
+    Hint("En uso: ${ui.transcriberStatus.ifBlank { "—" }}")
+    OutlinedButton(enabled = !testing, modifier = Modifier.padding(top = 8.dp), onClick = {
+        testing = true
+        testResult = "Hablá ahora…"
+        scope.launch {
+            testResult = app.controller.testTranscription()
+            testing = false
+        }
+    }) { Text(if (testing) "Escuchando…" else "Probar reconocimiento") }
+    testResult?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp)) }
 }
 
 // ------------------------------------------------------------------ Permisos

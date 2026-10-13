@@ -15,7 +15,7 @@ mismo cerebro.
 | Área | Detalle |
 |---|---|
 | Activación | Palabra de activación sin internet (Vosk sin cuenta o Porcupine), atajo global `Ctrl+Alt+X`, pausa desde la bandeja |
-| Voz | Transcripción offline con Vosk; respuesta con las voces de Windows (SAPI): voz, tono, velocidad y volumen |
+| Voz | Vosk para la palabra de activación y el texto en vivo; transcripción final con Whisper (en Groq u OpenAI, o local y offline); respuesta con las voces de Windows (SAPI) |
 | Cerebro | Anthropic, OpenAI, Gemini, Ollama local o cualquier API compatible con OpenAI; proveedor de respaldo; memoria de la conversación |
 | Acciones | Hora y fecha, abrir/cerrar programas, web y búsquedas, volumen y música, temporizadores y recordatorios, bloquear, apagar pantalla, suspender, reiniciar, apagar |
 | Mouse y teclado | Mira la pantalla (captura), hace clic, escribe, aprieta atajos y hace scroll |

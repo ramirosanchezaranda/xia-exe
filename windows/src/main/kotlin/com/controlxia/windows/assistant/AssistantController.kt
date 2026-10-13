@@ -27,7 +27,14 @@ import com.controlxia.windows.voice.VoskModels
 import com.controlxia.windows.voice.VoskSpeechToText
 import com.controlxia.windows.voice.VoskWakeWord
 import com.controlxia.windows.voice.WakeWordEngine
+import com.controlxia.brain.llm.ModelCapabilities
+import com.controlxia.windows.config.SttEngine
+import com.controlxia.windows.voice.CloudWhisper
+import com.controlxia.windows.voice.LocalWhisper
+import com.controlxia.windows.voice.Transcriber
+import com.controlxia.windows.voice.WhisperModels
 import com.controlxia.windows.voice.isClosingPhrase
+import com.controlxia.windows.voice.isWhisperHallucination
 import com.controlxia.windows.voice.parseYesNo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -83,6 +90,8 @@ data class AssistantUi(
     /** Estado de la palabra de activación: "Decí «Xia»" o el error. */
     val wakeStatus: String = "",
     val voiceInputReady: Boolean = false,
+    /** Quién transcribe: "Whisper en la nube (…)", "Vosk", o el problema. */
+    val transcriberStatus: String = "",
     val overlayVisible: Boolean = false,
 )
 
@@ -111,6 +120,8 @@ class AssistantController(
     private val toolset = WindowsToolset(shell, scope, timers)
 
     private var stt: SpeechToText? = null
+    @Volatile private var transcriber: Transcriber? = null
+    private var localWhisper: LocalWhisper? = null
     private val wakeSink = WakeSink { scope.launch { activate() } }
 
     private val _ui = MutableStateFlow(AssistantUi(agentName = settings.current.agentName))
@@ -128,7 +139,7 @@ class AssistantController(
 
     val assistant = Assistant(
         llmConfigs = { llm.activeChain() },
-        tools = { toolset.all },
+        tools = { visibleTools() },
         permissions = { settings.current.policy(it) },
         confirmer = confirmer,
         systemPrompt = { systemPrompt(settings.current) },
@@ -149,6 +160,10 @@ class AssistantController(
             // Se espera a que el usuario termine de tipear antes de rearmar.
             settings.state.map { Triple(it.wake, it.voskModelPath, it.listeningPaused) }
                 .distinctUntilChanged().drop(1).debounce(SETTINGS_DEBOUNCE_MS).collect { reloadVoice() }
+        }
+        scope.launch {
+            settings.state.map { it.stt }.distinctUntilChanged().drop(1).debounce(SETTINGS_DEBOUNCE_MS)
+                .collect { reloadTranscriber() }
         }
         scope.launch {
             settings.state.map { it.hotkey }.distinctUntilChanged().drop(1)
@@ -184,6 +199,7 @@ class AssistantController(
                 .onFailure { Log.e("No se pudo cargar Vosk", it) }.getOrNull()
             stt = model?.let { VoskSpeechToText(it) }
 
+            reloadTranscriber()
             val (engine, status) = buildWakeEngine(s, model)
             wakeSink.replace(engine)
             val micError = runCatching { mic.sink = wakeSink; mic.start() }.exceptionOrNull()
@@ -197,6 +213,38 @@ class AssistantController(
                 )
             }
         }
+    }
+
+    /** Arma el transcriptor final (Whisper) según la configuración. Vosk queda de respaldo. */
+    fun reloadTranscriber() {
+        val prefs = settings.current.stt
+        val (next, status) = when (prefs.engine) {
+            SttEngine.VOSK -> null to "Vosk"
+            SttEngine.WHISPER_CLOUD -> {
+                val key = llm.sttCloudKey()
+                if (key.isBlank()) null to "Falta la API key de Whisper: se usa Vosk"
+                else CloudWhisper(prefs.cloudBaseUrl, key, prefs.cloudModel).let { it to it.label }
+            }
+            SttEngine.WHISPER_LOCAL -> {
+                val file = WhisperModels.file(prefs.localModel)
+                if (!WhisperModels.isInstalled(prefs.localModel)) {
+                    null to "Falta descargar el modelo ${prefs.localModel.fileName}: se usa Vosk"
+                } else {
+                    val reuse = localWhisper?.takeIf { it.label.contains(file.name) }
+                    if (reuse == null) localWhisper?.close()
+                    (reuse ?: LocalWhisper(file)).also { localWhisper = it }.let { it to it.label }
+                }
+            }
+        }
+        transcriber = next
+        _ui.update { it.copy(transcriberStatus = status) }
+    }
+
+    private fun visibleTools(): List<com.controlxia.brain.tools.Tool> {
+        val primary = llm.activeChain().firstOrNull()
+        val vision = primary != null && ModelCapabilities.supportsVision(primary.type, primary.model)
+        // Sin visión, el modelo no puede ver capturas: ni se le ofrecen ni el mouse por coordenadas.
+        return if (vision) toolset.all else toolset.all.filterNot { it.spec.name in VISION_TOOLS }
     }
 
     private fun buildWakeEngine(s: AppSettings, model: org.vosk.Model?): Pair<WakeWordEngine?, String> {
@@ -327,7 +375,8 @@ class AssistantController(
                     delay(200) // que el sonido no entre en la transcripción
                 }
                 val silence = if (first) FIRST_LISTEN_TIMEOUT_MS else settings.current.followUpSeconds * 1000L
-                val text = listenOnce(silence) { partial -> _ui.update { it.copy(transcript = partial) } }
+                val heard = listenOnce(silence) { partial -> _ui.update { it.copy(transcript = partial) } }
+                val text = if (heard.text.isBlank()) "" else refine(heard)
                 if (text.isBlank()) {
                     _ui.update { it.copy(transcript = "", status = if (first) "No te escuché" else "") }
                     break
@@ -389,16 +438,47 @@ class AssistantController(
     private suspend fun listenOnce(
         silenceTimeoutMs: Long = FIRST_LISTEN_TIMEOUT_MS,
         onPartial: (String) -> Unit = {},
-    ): String {
-        val engine = stt ?: return ""
+    ): Heard {
+        val engine = stt ?: return Heard("", ShortArray(0))
         val session = engine.newSession(onPartial)
         mic.sink = session
         return try {
-            session.await(silenceTimeoutMs = silenceTimeoutMs)
+            val text = session.await(silenceTimeoutMs = silenceTimeoutMs)
+            Heard(text, session.recordedAudio())
         } finally {
             mic.sink = wakeSink
             session.close()
         }
+    }
+
+    private class Heard(val text: String, val audio: ShortArray)
+
+    /**
+     * Transcripción final: Vosk ya detectó que hubo una frase; Whisper la
+     * vuelve a transcribir con mucha más precisión. Si falla, queda el texto de Vosk.
+     */
+    private suspend fun refine(heard: Heard): String {
+        val t = transcriber ?: return heard.text
+        if (heard.audio.size < MIN_WHISPER_SAMPLES) return heard.text
+        _ui.update { it.copy(transcript = heard.text, status = "Transcribiendo…") }
+        return runCatching { t.transcribe(heard.audio, hint = settings.current.agentName) }
+            .onFailure { Log.e("Transcripción con ${t.label}", it) }
+            .getOrNull()
+            ?.takeUnless { isWhisperHallucination(it) }
+            ?: heard.text
+    }
+
+    /** Graba una frase y devuelve lo que entendió cada motor, para la configuración. */
+    suspend fun testTranscription(): String {
+        if (!canListen()) return "El micrófono no está disponible o la escucha está pausada."
+        Chime.listening()
+        delay(200)
+        val heard = listenOnce(FIRST_LISTEN_TIMEOUT_MS)
+        if (heard.text.isBlank()) return "No escuché nada."
+        val t = transcriber ?: return "Vosk: ${heard.text}"
+        val whisper = runCatching { t.transcribe(heard.audio, hint = settings.current.agentName) }
+            .getOrElse { "error: ${it.message}" }
+        return "Vosk: ${heard.text}\n${t.label}: $whisper"
     }
 
     private suspend fun askConfirmation(question: String): Boolean {
@@ -410,7 +490,7 @@ class AssistantController(
             say(question)
             if (stt == null || !mic.isRunning || settings.current.listeningPaused) return@launch
             repeat(2) {
-                val heard = listenOnce { partial -> _ui.update { it.copy(transcript = partial) } }
+                val heard = listenOnce { partial -> _ui.update { it.copy(transcript = partial) } }.text
                 when (parseYesNo(heard)) {
                     true -> { answer.complete(true); return@launch }
                     false -> { answer.complete(false); return@launch }
@@ -464,6 +544,7 @@ class AssistantController(
         wakeSink.replace(null)
         tts.stop()
         (tts as? SapiTextToSpeech)?.close()
+        localWhisper?.close()
         shell.close()
         scope.cancel()
     }
@@ -490,6 +571,8 @@ class AssistantController(
             herramienta directa (open_app, open_url), preferí eso. Nunca borres archivos ni envíes mensajes
             o compras sin que el usuario lo haya pedido explícitamente.
 
+            Hacé las cosas vos con las herramientas: no le expliques al usuario los pasos para que los haga él.
+            Si te falta un dato (por ejemplo, el nombre de un archivo), preguntalo en una sola frase corta.
             Si una acción fue cancelada o bloqueada por el usuario, no la reintentes por otro camino.
             Al terminar, resumí en una frase lo que hiciste.
         """.trimIndent()
@@ -501,6 +584,9 @@ class AssistantController(
         const val TYPED_HIDE_AFTER_MS = 30_000L
         const val FIRST_LISTEN_TIMEOUT_MS = 6_000L
         const val MAX_CHAT_LINES = 40
+        /** Menos de 0,3 s de audio no vale la pena mandarlo a Whisper. */
+        const val MIN_WHISPER_SAMPLES = 4_800
+        val VISION_TOOLS = setOf("look_at_screen", "mouse_click", "mouse_move")
         const val SETTINGS_DEBOUNCE_MS = 800L
     }
 }
