@@ -1,6 +1,7 @@
 package com.controlxia.brain.llm
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -55,12 +56,30 @@ object HttpJson {
             .build(),
     )
 
-    private suspend fun execute(request: Request): JsonObject = withContext(Dispatchers.IO) {
+    /** Espera máxima para reintentar un 429; más que eso conviene pasar al respaldo. */
+    private const val MAX_RETRY_WAIT_MS = 4_000L
+
+    private suspend fun execute(request: Request, retried: Boolean = false): JsonObject {
+        try {
+            return executeOnce(request)
+        } catch (e: LlmException) {
+            val wait = e.retryAfterMs
+            if (!retried && e.statusCode == 429 && wait != null && wait <= MAX_RETRY_WAIT_MS) {
+                delay(wait + 250)
+                return execute(request, retried = true)
+            }
+            throw e
+        }
+    }
+
+    private suspend fun executeOnce(request: Request): JsonObject = withContext(Dispatchers.IO) {
         try {
             client.newCall(request).execute().use { response ->
                 val text = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    throw LlmException("HTTP ${response.code}: ${text.take(500)}")
+                    throw LlmException("HTTP ${response.code}: ${text.take(500)}", statusCode = response.code).apply {
+                        retryAfterMs = retryAfter(response.header("retry-after"), text)
+                    }
                 }
                 json.parseToJsonElement(text) as? JsonObject
                     ?: throw LlmException("Respuesta inesperada: ${text.take(200)}")
@@ -71,6 +90,17 @@ object HttpJson {
             throw LlmException("Error de red: ${e.message}", e)
         }
     }
+}
+
+/**
+ * Cuánto pide esperar el proveedor: header Retry-After (segundos) o el texto
+ * "try again in 12.4s" que usan Groq y OpenAI.
+ */
+internal fun retryAfter(header: String?, body: String): Long? {
+    header?.trim()?.toDoubleOrNull()?.let { return (it * 1000).toLong() }
+    val match = Regex("try again in ([0-9.]+)(ms|s)", RegexOption.IGNORE_CASE).find(body) ?: return null
+    val value = match.groupValues[1].toDoubleOrNull() ?: return null
+    return if (match.groupValues[2].lowercase() == "ms") value.toLong() else (value * 1000).toLong()
 }
 
 /** Contenido de un primitivo JSON, tratando `null` como ausente. */

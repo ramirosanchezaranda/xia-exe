@@ -158,7 +158,7 @@ class WindowsLogicTest {
         // Ollama no necesita clave y trae URL por defecto.
         repo.update { it.copy(llm = it.llm.copy(fallback = LlmProviderType.OLLAMA, providers = it.llm.providers + (LlmProviderType.OLLAMA to ProviderSettings(model = "llama3.2")))) }
         assertEquals(listOf("claude-opus-5-5", "llama3.2"), resolver.activeChain().map { it.model })
-        assertEquals("http://localhost:11434/v1", resolver.activeChain()[1].baseUrl)
+        assertEquals("http://localhost:11434", resolver.activeChain()[1].baseUrl)
     }
 
     @Test
@@ -187,5 +187,26 @@ class WindowsLogicTest {
         assertEquals(PermissionPolicy.ASK, s.policy(ActionCategory.INPUT_CONTROL))
         assertEquals(PermissionPolicy.ASK, s.policy(ActionCategory.POWER))
         assertEquals(PermissionPolicy.ALLOW, s.policy(ActionCategory.OPEN_APPS))
+    }
+}
+
+class FolderAndAppAliasTest {
+    @Test
+    fun `reconoce carpetas conocidas aunque el modelo invente el formato`() {
+        assertEquals("Personal", AppTools.knownFolder("documentos"))
+        assertEquals("Personal", AppTools.knownFolder("la carpeta de documentos"))
+        assertEquals("Personal", AppTools.knownFolder("explorer shell:MyDocuments"))
+        assertEquals("Downloads", AppTools.knownFolder("Descargas"))
+        assertEquals("My Pictures", AppTools.knownFolder("imágenes"))
+        assertEquals("RecycleBinFolder", AppTools.knownFolder("papelera de reciclaje"))
+        assertNull(AppTools.knownFolder("spotify"))
+    }
+
+    @Test
+    fun `apps del sistema por su nombre en castellano`() {
+        assertEquals("Explorador de archivos", AppTools.systemApp("el explorador de archivos")?.first)
+        assertEquals("Explorador de archivos", AppTools.systemApp("explorer")?.first)
+        assertEquals("Bloc de notas", AppTools.systemApp("Bloc de notas")?.first)
+        assertNull(AppTools.systemApp("Spotify"))
     }
 }

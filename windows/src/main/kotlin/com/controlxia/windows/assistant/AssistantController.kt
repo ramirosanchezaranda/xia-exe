@@ -414,7 +414,7 @@ class AssistantController(
 
             Fecha y hora actual: $now.
 
-            Cuando el usuario pida algo de la computadora (abrir o cerrar programas, páginas web, volumen,
+            Cuando el usuario pida algo de la computadora (abrir o cerrar programas, abrir carpetas, páginas web, volumen,
             música, temporizadores, recordatorios, bloquear, apagar), usá la herramienta correspondiente.
             Para preguntas generales respondé vos mismo en una o dos frases. No inventes acciones que no
             tenés; si algo no se puede, decilo.

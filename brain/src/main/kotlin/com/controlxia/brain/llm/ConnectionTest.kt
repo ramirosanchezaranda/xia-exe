@@ -24,8 +24,7 @@ object LlmDiagnostics {
 
     /** Modelos instalados en un servidor Ollama (GET /api/tags). */
     suspend fun ollamaModels(baseUrl: String): List<String> {
-        val root = baseUrl.trimEnd('/').removeSuffix("/v1")
-        val response = HttpJson.get("$root/api/tags")
+        val response = HttpJson.get(OllamaProvider.rootUrl(baseUrl) + "/api/tags")
         return (response["models"] as? JsonArray).orEmpty()
             .mapNotNull { (it as? JsonObject)?.get("name").stringOrNull }
     }

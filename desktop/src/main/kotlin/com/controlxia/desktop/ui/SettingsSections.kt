@@ -265,7 +265,7 @@ fun ProviderEditor(app: AppContext, type: LlmProviderType) {
             OutlinedTextField(
                 value = p.baseUrl.ifBlank { type.defaultBaseUrl.orEmpty() },
                 onValueChange = { v -> updateProvider { it.copy(baseUrl = v.trim()) } },
-                label = { Text("URL base (compatible OpenAI)") },
+                label = { Text(if (type == LlmProviderType.OLLAMA) "URL de Ollama" else "URL base (compatible OpenAI)") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
             )

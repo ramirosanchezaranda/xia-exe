@@ -43,10 +43,10 @@ enum class LlmProviderType(
     ),
     OLLAMA(
         displayName = "Ollama (local, sin internet)",
-        suggestedModels = listOf("llama3.2", "qwen2.5", "llava"),
+        suggestedModels = listOf("qwen3:8b", "gpt-oss:20b", "qwen3:4b", "qwen2.5vl:7b"),
         needsApiKey = false,
         needsBaseUrl = true,
-        defaultBaseUrl = "http://localhost:11434/v1",
+        defaultBaseUrl = "http://localhost:11434",
     ),
     OPENAI_COMPATIBLE(
         displayName = "Compatible OpenAI (Groq, OpenRouter…)",
@@ -75,8 +75,11 @@ object LlmProviderFactory {
     fun create(config: LlmConfig): LlmProvider = when (config.type) {
         LlmProviderType.ANTHROPIC -> AnthropicProvider(config.apiKey, config.model, config.effort)
         LlmProviderType.GEMINI -> GeminiProvider(config.apiKey, config.model)
+        LlmProviderType.OLLAMA -> OllamaProvider(
+            model = config.model,
+            baseUrl = config.baseUrl?.ifBlank { null } ?: LlmProviderType.OLLAMA.defaultBaseUrl!!,
+        )
         LlmProviderType.OPENAI,
-        LlmProviderType.OLLAMA,
         LlmProviderType.OPENAI_COMPATIBLE -> OpenAiCompatibleProvider(
             apiKey = config.apiKey,
             model = config.model,

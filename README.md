@@ -55,5 +55,6 @@ gradlew.bat :desktop:run                :: abrir la app
 gradlew.bat :desktop:packageExe         :: instalador .exe
 ```
 
+Para usar un LLM local sin límites, ver [docs/LLM_LOCAL.md](docs/LLM_LOCAL.md).
 Más detalles en [docs/COMPILAR.md](docs/COMPILAR.md). El PRD con las decisiones
 está en [docs/PRD_DESKTOP.md](docs/PRD_DESKTOP.md).

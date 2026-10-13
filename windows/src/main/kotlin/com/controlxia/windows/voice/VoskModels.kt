@@ -16,6 +16,11 @@ import java.util.zip.ZipInputStream
  */
 object VoskModels {
 
+    init {
+        // Por si se usa sin pasar por main(): Vosk devuelve el texto en UTF-8.
+        if (System.getProperty("jna.encoding") == null) System.setProperty("jna.encoding", "UTF-8")
+    }
+
     const val DEFAULT_NAME = "vosk-model-small-es-0.42"
     const val DEFAULT_URL = "https://alphacephei.com/vosk/models/$DEFAULT_NAME.zip"
 

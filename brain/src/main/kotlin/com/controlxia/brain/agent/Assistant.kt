@@ -78,6 +78,8 @@ class Assistant(
         val actions = mutableListOf<ExecutedAction>()
         // Dentro de un mismo pedido, una categoría confirmada no se vuelve a preguntar.
         val approved = mutableSetOf<ActionCategory>()
+        // Cuántas veces se pidió cada acción idéntica en este pedido.
+        val repeats = mutableMapOf<String, Int>()
 
         memory.startTurn(command)
 
@@ -99,8 +101,16 @@ class Assistant(
                 val results = mutableListOf<Pair<Tool?, ToolResult>>()
                 for (call in response.toolCalls) {
                     val tool = byName[call.name]
+                    val signature = call.name + call.arguments.toString()
+                    val count = (repeats[signature] ?: 0) + 1
+                    repeats[signature] = count
                     val result = when {
                         denied -> ToolResult("No ejecutado: el usuario canceló el pedido.", isError = true)
+                        count > MAX_IDENTICAL_CALLS -> ToolResult(
+                            "No repitas esta acción con los mismos datos: ya se ejecutó. Si no dio el resultado " +
+                                "esperado, probá otra herramienta o decile al usuario qué pasó.",
+                            isError = true,
+                        )
                         tool == null -> ToolResult("La herramienta ${call.name} no existe o está bloqueada.", isError = true)
                         else -> {
                             val outcome = authorize(tool, call, approved)
@@ -155,6 +165,10 @@ class Assistant(
         } catch (e: CancellationException) {
             memory.add(ChatMessage(ChatRole.ASSISTANT, "(pedido cancelado)"))
             throw e
+        } catch (e: LlmException) {
+            // Se dice una frase corta; el JSON del proveedor queda en el historial.
+            memory.add(ChatMessage(ChatRole.ASSISTANT, "(error: ${e.message})"))
+            return AssistantReply(e.spokenMessage, actions, error = e.message)
         } catch (e: Exception) {
             val spoken = "Tuve un problema para procesar eso: ${e.message}"
             memory.add(ChatMessage(ChatRole.ASSISTANT, "(error: ${e.message})"))
@@ -190,6 +204,10 @@ class Assistant(
         throw e
     } catch (e: Exception) {
         ToolResult("Error al ejecutar ${call.name}: ${e.message}", isError = true)
+    }
+
+    private companion object {
+        const val MAX_IDENTICAL_CALLS = 2
     }
 
     private suspend fun completeWithFallback(

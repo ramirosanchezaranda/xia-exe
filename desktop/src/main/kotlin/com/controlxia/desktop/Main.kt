@@ -30,6 +30,9 @@ import javax.swing.JOptionPane
  * minimizado en la bandeja; sin argumentos abre la configuración.
  */
 fun main(args: Array<String>) {
+    // Vosk devuelve UTF-8; sin esto JNA lo lee como cp1252 y "podrías" llega como "podrÃ­as".
+    // Tiene que fijarse antes de que se cargue cualquier clase de JNA.
+    System.setProperty("jna.encoding", "UTF-8")
     if (!SingleInstance.acquire()) {
         JOptionPane.showMessageDialog(null, "ControlXIA ya está abierto: buscalo en la bandeja del sistema.")
         return

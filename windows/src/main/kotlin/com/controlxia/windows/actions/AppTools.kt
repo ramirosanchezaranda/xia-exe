@@ -50,6 +50,14 @@ class AppTools(private val shell: PowerShellHost) {
             progress = { "Cerrando ${it.str("app_name")}…" },
         ) { args -> close(args.str("app_name"), args.bool("force")) },
         tool(
+            "open_folder",
+            "Abre una carpeta en el Explorador de archivos: documentos, descargas, escritorio, imágenes, " +
+                "música, videos, este equipo, papelera, o una ruta como C:\\Proyectos.",
+            ActionCategory.OPEN_APPS,
+            schema { string("folder", "Nombre de la carpeta conocida o ruta completa", required = true) },
+            progress = { "Abriendo ${it.str("folder")}…" },
+        ) { args -> openFolder(args.str("folder")) },
+        tool(
             "list_open_windows",
             "Lista las ventanas abiertas (programa y título). Útil antes de cerrar o cambiar de ventana.",
             ActionCategory.INFO,
@@ -58,6 +66,13 @@ class AppTools(private val shell: PowerShellHost) {
 
     suspend fun open(name: String): ToolResult {
         if (name.isBlank()) return ToolResult("Falta el nombre del programa", isError = true)
+        // Programas de Windows con nombre propio en castellano: se abren directo.
+        systemApp(name)?.let { (label, command) ->
+            withContext(Dispatchers.IO) { ProcessBuilder(command).start() }
+            return ToolResult("Abriendo $label")
+        }
+        // Si en realidad pidió una carpeta, se abre la carpeta.
+        knownFolder(name)?.let { return openFolder(name) }
         val entry = bestMatch(name, apps()) { it.name }
         if (entry != null) {
             withContext(Dispatchers.IO) {
@@ -70,6 +85,21 @@ class AppTools(private val shell: PowerShellHost) {
             shell.run("Start-Process ${psQuote(name)}")
             ToolResult("Abriendo $name")
         }.getOrElse { ToolResult("No encontré un programa llamado $name", isError = true) }
+    }
+
+    suspend fun openFolder(folder: String): ToolResult {
+        val shellName = knownFolder(folder)
+        val target = when {
+            shellName != null -> "shell:$shellName"
+            java.io.File(folder.trim()).isDirectory -> java.io.File(folder.trim()).absolutePath
+            else -> return ToolResult(
+                "No encontré la carpeta \"$folder\". Las conocidas son: documentos, descargas, escritorio, " +
+                    "imágenes, música, videos, este equipo y papelera; si no, pedí la ruta completa.",
+                isError = true,
+            )
+        }
+        withContext(Dispatchers.IO) { ProcessBuilder("explorer.exe", target).start() }
+        return ToolResult("Abriendo ${folder.trim()}")
     }
 
     suspend fun close(name: String, force: Boolean): ToolResult {
@@ -108,6 +138,48 @@ class AppTools(private val shell: PowerShellHost) {
 
     companion object {
         private const val CACHE_MS = 10 * 60 * 1000L
+
+        /**
+         * Carpetas especiales de Windows por su nombre "shell:". Respetan si el
+         * usuario las movió (por ejemplo a OneDrive).
+         */
+        private val FOLDERS = mapOf(
+            "documentos" to "Personal", "mis documentos" to "Personal", "documents" to "Personal",
+            "descargas" to "Downloads", "downloads" to "Downloads",
+            "escritorio" to "Desktop", "desktop" to "Desktop",
+            "imagenes" to "My Pictures", "fotos" to "My Pictures", "pictures" to "My Pictures",
+            "musica" to "My Music", "music" to "My Music",
+            "videos" to "My Video", "video" to "My Video",
+            "este equipo" to "MyComputerFolder", "mi pc" to "MyComputerFolder", "equipo" to "MyComputerFolder",
+            "papelera" to "RecycleBinFolder", "papelera reciclaje" to "RecycleBinFolder",
+        )
+
+        /** "la carpeta de documentos", "shell:MyDocuments"… → nombre shell: o null. */
+        fun knownFolder(text: String): String? {
+            val t = text.normalizeSpeech()
+                .replace(Regex("^(explorer )?shell ?"), "")
+                .replace(Regex("\\b(la|el|mi|mis|carpeta|de|del)\\b"), " ")
+                .replace(Regex("\\s+"), " ").trim()
+            if (t.isEmpty()) return null
+            if (t == "mydocuments" || t == "personal") return "Personal"
+            return FOLDERS[t] ?: FOLDERS.entries.firstOrNull { (k, _) -> t == k.replace(" ", "") }?.value
+        }
+
+        private val SYSTEM_APPS = listOf(
+            listOf("explorador de archivos", "explorador", "explorer", "archivos") to ("Explorador de archivos" to listOf("explorer.exe")),
+            listOf("bloc de notas", "notepad", "bloc") to ("Bloc de notas" to listOf("notepad.exe")),
+            listOf("calculadora", "calc") to ("Calculadora" to listOf("calc.exe")),
+            listOf("paint") to ("Paint" to listOf("mspaint.exe")),
+            listOf("administrador de tareas", "task manager") to ("Administrador de tareas" to listOf("taskmgr.exe")),
+            listOf("configuracion", "ajustes") to ("Configuración" to listOf("explorer.exe", "ms-settings:")),
+            listOf("panel de control") to ("Panel de control" to listOf("control.exe")),
+        )
+
+        /** Apps de Windows por nombre común → (nombre para decir, comando). */
+        fun systemApp(name: String): Pair<String, List<String>>? {
+            val n = name.normalizeSpeech().removePrefix("el ").removePrefix("la ").trim()
+            return SYSTEM_APPS.firstOrNull { (aliases, _) -> n in aliases }?.second
+        }
 
         /** ConvertTo-Json devuelve un objeto suelto si hay un solo resultado. */
         internal fun parseObjects(json: String): List<JsonObject> {

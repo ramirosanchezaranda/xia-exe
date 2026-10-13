@@ -64,4 +64,28 @@ data class LlmResponse(
     val assistantMessage: ChatMessage,
 )
 
-class LlmException(message: String, cause: Throwable? = null) : Exception(message, cause)
+/**
+ * Error del proveedor. [statusCode] es el HTTP (null si fue de red) y
+ * [spokenMessage] una frase corta para decir en voz alta; el detalle completo
+ * queda en [message] para el historial y el log.
+ */
+class LlmException(
+    message: String,
+    cause: Throwable? = null,
+    val statusCode: Int? = null,
+) : Exception(message, cause) {
+
+    /** Espera sugerida por el proveedor ante un 429, si la informó. */
+    var retryAfterMs: Long? = null
+
+    val spokenMessage: String
+        get() = when {
+            statusCode == 429 -> "El proveedor de inteligencia artificial me está limitando por exceso de uso. " +
+                "Probá de nuevo en unos segundos, o configurá un proveedor de respaldo."
+            statusCode == 401 || statusCode == 403 -> "La clave del proveedor de inteligencia artificial no es válida. Revisala en la configuración."
+            statusCode == 404 -> "El proveedor no encuentra ese modelo. Revisá el nombre en la configuración."
+            statusCode != null && statusCode >= 500 -> "El proveedor de inteligencia artificial está con problemas. Probá en un rato."
+            statusCode == null && cause != null -> "No me pude conectar con el proveedor de inteligencia artificial."
+            else -> "Tuve un problema con el proveedor de inteligencia artificial."
+        }
+}
