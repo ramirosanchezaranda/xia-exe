@@ -29,6 +29,7 @@ import com.controlxia.brain.llm.LlmProviderType
 import com.controlxia.brain.tools.ActionCategory
 import com.controlxia.brain.tools.PermissionPolicy
 import com.controlxia.windows.config.AppPaths
+import com.controlxia.windows.config.groupConversations
 import com.controlxia.windows.config.SecretStore
 import com.controlxia.windows.config.WakeEngineType
 import com.controlxia.windows.voice.PorcupineWakeWord
@@ -77,6 +78,18 @@ fun AssistantSection(app: AppContext) {
         modifier = Modifier.fillMaxWidth(),
     )
     Hint("Abre el asistente desde cualquier programa (RF-04).")
+
+    SectionLabel("Conversación")
+    SwitchRow(
+        "Modo conversación",
+        "Después de responder sigue escuchando, sin repetir la palabra de activación. Decí «listo» o «gracias» para terminar.",
+        s.conversationMode,
+    ) { v -> app.settings.update { it.copy(conversationMode = v) } }
+    if (s.conversationMode) {
+        LabeledSlider("Silencio que cierra la conversación", s.followUpSeconds, 4..15, valueLabel = { "$it s" }) { v ->
+            app.settings.update { it.copy(followUpSeconds = v) }
+        }
+    }
 
     Hairline()
     SwitchRow("Pausar la escucha", "Con la escucha pausada no se procesa audio del micrófono.", s.listeningPaused) {
@@ -398,16 +411,19 @@ fun HistorySection(app: AppContext) {
     if (entries.isEmpty()) {
         Hint("Todavía no hay pedidos.")
     }
-    entries.asReversed().take(200).forEach { e ->
+    entries.groupConversations().asReversed().take(100).forEach { group ->
         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+            val first = Instant.ofEpochMilli(group.first().timestamp).atZone(ZoneId.systemDefault())
             Text(
-                Instant.ofEpochMilli(e.timestamp).atZone(ZoneId.systemDefault()).format(format),
+                first.format(format) + if (group.size > 1) " · conversación de ${group.size} pedidos" else "",
                 style = MaterialTheme.typography.labelSmall,
                 color = Muted,
             )
-            Text("“${e.command}”", style = MaterialTheme.typography.titleSmall)
-            Text(e.response, style = MaterialTheme.typography.bodyMedium)
-            e.actions.forEach { Text("→ $it", style = MaterialTheme.typography.labelSmall, color = Accent) }
+            group.forEach { e ->
+                Text("Vos: ${e.command}", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 6.dp))
+                Text("${s.agentName}: ${e.response}", style = MaterialTheme.typography.bodyMedium)
+                e.actions.forEach { Text("→ $it", style = MaterialTheme.typography.labelSmall, color = Accent) }
+            }
         }
         Hairline()
     }

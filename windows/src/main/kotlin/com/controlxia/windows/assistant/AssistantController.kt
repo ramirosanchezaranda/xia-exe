@@ -27,6 +27,7 @@ import com.controlxia.windows.voice.VoskModels
 import com.controlxia.windows.voice.VoskSpeechToText
 import com.controlxia.windows.voice.VoskWakeWord
 import com.controlxia.windows.voice.WakeWordEngine
+import com.controlxia.windows.voice.isClosingPhrase
 import com.controlxia.windows.voice.parseYesNo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -59,10 +60,22 @@ import java.util.Locale
 /** Fase de la interacción, para el ícono de la bandeja y el indicador flotante (RF-06). */
 enum class Phase { STARTING, IDLE, PAUSED, LISTENING, THINKING, SPEAKING, CONFIRMING }
 
+enum class Speaker { USER, ASSISTANT }
+
+/** Un mensaje de la conversación en curso, para mostrarla como chat. */
+data class ChatLine(
+    val speaker: Speaker,
+    val text: String,
+    /** Acciones ejecutadas en ese turno, ej. "Abriendo documentos". */
+    val actions: List<String> = emptyList(),
+)
+
 data class AssistantUi(
     val phase: Phase = Phase.STARTING,
     val agentName: String = "Xia",
-    /** Lo que se va entendiendo del pedido. */
+    /** La conversación en curso, de más vieja a más nueva. */
+    val conversation: List<ChatLine> = emptyList(),
+    /** Lo que se va entendiendo del pedido actual (todavía no es un mensaje). */
     val transcript: String = "",
     val response: String = "",
     val status: String = "",
@@ -108,6 +121,7 @@ class AssistantController(
 
     private var sessionJob: Job? = null
     private var hideJob: Job? = null
+    @Volatile private var conversationId: String? = null
     @Volatile private var pendingConfirmation: CompletableDeferred<Boolean>? = null
 
     private val confirmer = Confirmer { question -> askConfirmation(question) }
@@ -233,11 +247,11 @@ class AssistantController(
         tts.stop()
         sessionJob?.cancel()
         hideJob?.cancel()
-        val canListen = !settings.current.listeningPaused && stt != null && mic.isRunning
-        if (!canListen) {
+        startConversationIfNeeded()
+        if (!canListen()) {
             _ui.update {
                 it.copy(
-                    overlayVisible = true, transcript = "", response = "", confirmQuestion = null,
+                    overlayVisible = true, transcript = "", confirmQuestion = null,
                     phase = if (settings.current.listeningPaused) Phase.PAUSED else Phase.IDLE,
                     status = "Escribí tu pedido",
                 )
@@ -247,13 +261,19 @@ class AssistantController(
         sessionJob = scope.launch { voiceSession() }
     }
 
-    /** Pedido escrito desde el indicador flotante. */
+    /** Pedido escrito desde el indicador flotante: se suma a la misma conversación. */
     fun submitText(text: String) {
         if (text.isBlank()) return
         tts.stop()
         sessionJob?.cancel()
         hideJob?.cancel()
-        sessionJob = scope.launch { handleCommand(text.trim()) }
+        startConversationIfNeeded()
+        sessionJob = scope.launch {
+            handleCommand(text.trim())
+            // Escrito: no se abre el micrófono solo, pero el chat queda a mano.
+            _ui.update { it.copy(phase = idlePhase(), status = "") }
+            scheduleHide(TYPED_HIDE_AFTER_MS)
+        }
     }
 
     fun answerConfirmation(yes: Boolean) {
@@ -267,28 +287,65 @@ class AssistantController(
         pendingConfirmation?.complete(false)
         tts.stop()
         sessionJob?.cancel()
-        _ui.update { it.copy(overlayVisible = false, phase = idlePhase(), status = "", confirmQuestion = null) }
+        _ui.update { it.copy(overlayVisible = false, phase = idlePhase(), status = "", confirmQuestion = null, transcript = "") }
     }
 
-    fun forgetConversation() = assistant.memory.clear()
+    /** Olvida el contexto del LLM y empieza una conversación nueva. */
+    fun forgetConversation() {
+        assistant.memory.clear()
+        conversationId = null
+        _ui.update { it.copy(conversation = emptyList()) }
+    }
+
+    private fun canListen() = !settings.current.listeningPaused && stt != null && mic.isRunning
+
+    /**
+     * Si el indicador estaba cerrado, arranca una conversación nueva (el chat
+     * se vacía; el LLM conserva su memoria corta igual que antes).
+     */
+    private fun startConversationIfNeeded() {
+        if (conversationId == null || !_ui.value.overlayVisible) {
+            conversationId = java.util.UUID.randomUUID().toString()
+            _ui.update { it.copy(conversation = emptyList()) }
+        }
+    }
 
     private suspend fun voiceSession() {
         try {
-            _ui.update {
-                it.copy(
-                    phase = Phase.LISTENING, overlayVisible = true, transcript = "", response = "",
-                    status = "Escuchando…", confirmQuestion = null,
-                )
+            var first = true
+            // Modo conversación: después de responder sigue escuchando sin la
+            // palabra de activación, hasta que haya silencio o el usuario cierre.
+            while (true) {
+                _ui.update {
+                    it.copy(
+                        phase = Phase.LISTENING, overlayVisible = true, transcript = "",
+                        status = if (first) "Escuchando…" else "Te sigo escuchando…", confirmQuestion = null,
+                    )
+                }
+                if (first) {
+                    Chime.listening()
+                    delay(200) // que el sonido no entre en la transcripción
+                }
+                val silence = if (first) FIRST_LISTEN_TIMEOUT_MS else settings.current.followUpSeconds * 1000L
+                val text = listenOnce(silence) { partial -> _ui.update { it.copy(transcript = partial) } }
+                if (text.isBlank()) {
+                    _ui.update { it.copy(transcript = "", status = if (first) "No te escuché" else "") }
+                    break
+                }
+                if (!first && isClosingPhrase(text)) {
+                    addLine(ChatLine(Speaker.USER, text))
+                    val bye = "Cuando quieras."
+                    addLine(ChatLine(Speaker.ASSISTANT, bye))
+                    _ui.update { it.copy(phase = Phase.SPEAKING, transcript = "") }
+                    say(bye)
+                    break
+                }
+                handleCommand(text)
+                first = false
+                if (!settings.current.conversationMode || !canListen()) break
             }
-            Chime.listening()
-            delay(200) // que el sonido no entre en la transcripción
-            val text = listenOnce { partial -> _ui.update { it.copy(transcript = partial) } }
-            if (text.isBlank()) {
-                _ui.update { it.copy(phase = idlePhase(), status = "No te escuché") }
-                scheduleHide()
-                return
-            }
-            handleCommand(text)
+            _ui.update { it.copy(phase = idlePhase()) }
+            scheduleHide()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -299,9 +356,10 @@ class AssistantController(
     }
 
     private suspend fun handleCommand(text: String) {
+        addLine(ChatLine(Speaker.USER, text))
         _ui.update {
             it.copy(
-                phase = Phase.THINKING, overlayVisible = true, transcript = text,
+                phase = Phase.THINKING, overlayVisible = true, transcript = "",
                 response = "", status = "Pensando…", confirmQuestion = null,
             )
         }
@@ -313,23 +371,30 @@ class AssistantController(
                     command = text,
                     response = reply.spoken,
                     actions = reply.actions.map { "${it.tool}: ${it.result} (${it.status})" },
+                    conversationId = conversationId.orEmpty(),
                 ),
             )
         }
         reply.error?.let { Log.e("Asistente: $it") }
+        addLine(ChatLine(Speaker.ASSISTANT, reply.spoken, reply.actions.map { it.result }))
         _ui.update { it.copy(phase = Phase.SPEAKING, response = reply.spoken, status = "") }
         say(reply.spoken)
-        _ui.update { it.copy(phase = idlePhase()) }
-        scheduleHide()
+    }
+
+    private fun addLine(line: ChatLine) {
+        _ui.update { it.copy(conversation = (it.conversation + line).takeLast(MAX_CHAT_LINES)) }
     }
 
     /** Escucha una frase con el micrófono compartido y devuelve el texto. */
-    private suspend fun listenOnce(onPartial: (String) -> Unit = {}): String {
+    private suspend fun listenOnce(
+        silenceTimeoutMs: Long = FIRST_LISTEN_TIMEOUT_MS,
+        onPartial: (String) -> Unit = {},
+    ): String {
         val engine = stt ?: return ""
         val session = engine.newSession(onPartial)
         mic.sink = session
         return try {
-            session.await()
+            session.await(silenceTimeoutMs = silenceTimeoutMs)
         } finally {
             mic.sink = wakeSink
             session.close()
@@ -366,10 +431,10 @@ class AssistantController(
             .onFailure { if (it is CancellationException) throw it else Log.e("Voz", it) }
     }
 
-    private fun scheduleHide() {
+    private fun scheduleHide(afterMs: Long = HIDE_AFTER_MS) {
         hideJob?.cancel()
         hideJob = scope.launch {
-            delay(HIDE_AFTER_MS)
+            delay(afterMs)
             _ui.update { if (it.phase == Phase.IDLE || it.phase == Phase.PAUSED) it.copy(overlayVisible = false) else it }
         }
     }
@@ -432,7 +497,10 @@ class AssistantController(
 
     private companion object {
         const val CONFIRM_TIMEOUT_MS = 20_000L
-        const val HIDE_AFTER_MS = 5_000L
+        const val HIDE_AFTER_MS = 6_000L
+        const val TYPED_HIDE_AFTER_MS = 30_000L
+        const val FIRST_LISTEN_TIMEOUT_MS = 6_000L
+        const val MAX_CHAT_LINES = 40
         const val SETTINGS_DEBOUNCE_MS = 800L
     }
 }

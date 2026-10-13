@@ -14,7 +14,23 @@ data class HistoryEntry(
     val response: String,
     /** Acciones ejecutadas, ej. "open_app: Abriendo Spotify (DONE)". */
     val actions: List<String> = emptyList(),
+    /** Pedidos de una misma conversación comparten este id. */
+    val conversationId: String = "",
 )
+
+/** Agrupa entradas consecutivas de la misma conversación (las viejas, sin id, quedan solas). */
+fun List<HistoryEntry>.groupConversations(): List<List<HistoryEntry>> {
+    val groups = mutableListOf<MutableList<HistoryEntry>>()
+    for (entry in this) {
+        val last = groups.lastOrNull()
+        if (last != null && entry.conversationId.isNotEmpty() && last.last().conversationId == entry.conversationId) {
+            last += entry
+        } else {
+            groups += mutableListOf(entry)
+        }
+    }
+    return groups
+}
 
 /**
  * Historial local de comandos y respuestas (RF-19). Se guarda solo en la PC,

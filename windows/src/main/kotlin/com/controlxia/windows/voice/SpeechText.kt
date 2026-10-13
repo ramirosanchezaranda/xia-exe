@@ -30,3 +30,19 @@ fun parseYesNo(text: String): Boolean? {
         else -> null
     }
 }
+
+/**
+ * ¿El usuario está cerrando la conversación? Solo si la frase entera es una
+ * despedida: "listo, ahora abrí Spotify" sigue siendo un pedido.
+ */
+fun isClosingPhrase(text: String): Boolean {
+    val t = text.normalizeSpeech()
+        .removePrefix("ok ").removePrefix("bueno ").removeSuffix(" gracias").trim()
+    return t in CLOSING_PHRASES || text.normalizeSpeech() in CLOSING_PHRASES
+}
+
+private val CLOSING_PHRASES = setOf(
+    "listo", "gracias", "muchas gracias", "nada", "nada mas", "eso es todo", "eso era todo",
+    "chau", "chao", "hasta luego", "ya esta", "esta bien", "perfecto", "no gracias", "nada gracias",
+    "listo gracias", "ok", "dale gracias", "basta", "termina", "terminamos",
+)

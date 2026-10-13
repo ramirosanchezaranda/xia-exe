@@ -13,6 +13,7 @@ import com.controlxia.windows.config.AppSettings
 import com.controlxia.windows.config.FileSecretStore
 import com.controlxia.windows.config.HistoryEntry
 import com.controlxia.windows.config.HistoryStore
+import com.controlxia.windows.config.groupConversations
 import com.controlxia.windows.config.LlmConfigResolver
 import com.controlxia.windows.config.ProviderSettings
 import com.controlxia.windows.config.SecretStore
@@ -208,5 +209,25 @@ class FolderAndAppAliasTest {
         assertEquals("Explorador de archivos", AppTools.systemApp("explorer")?.first)
         assertEquals("Bloc de notas", AppTools.systemApp("Bloc de notas")?.first)
         assertNull(AppTools.systemApp("Spotify"))
+    }
+}
+
+class ConversationTest {
+    @Test
+    fun `detecta cuando el usuario cierra la conversacion`() {
+        assertTrue(com.controlxia.windows.voice.isClosingPhrase("Listo, gracias"))
+        assertTrue(com.controlxia.windows.voice.isClosingPhrase("gracias"))
+        assertTrue(com.controlxia.windows.voice.isClosingPhrase("nada más"))
+        assertTrue(com.controlxia.windows.voice.isClosingPhrase("chau"))
+        assertTrue(!com.controlxia.windows.voice.isClosingPhrase("listo, ahora abrí Spotify"))
+        assertTrue(!com.controlxia.windows.voice.isClosingPhrase("qué hora es"))
+    }
+
+    @Test
+    fun `agrupa el historial por conversacion`() {
+        val e = { id: String, cmd: String -> com.controlxia.windows.config.HistoryEntry(0, cmd, "ok", conversationId = id) }
+        val list = listOf(e("", "viejo"), e("a", "uno"), e("a", "dos"), e("b", "tres"), e("", "suelto1"), e("", "suelto2"))
+        val grouped = list.groupConversations()
+        assertEquals(listOf(1, 2, 1, 1, 1), grouped.map { it.size })
     }
 }

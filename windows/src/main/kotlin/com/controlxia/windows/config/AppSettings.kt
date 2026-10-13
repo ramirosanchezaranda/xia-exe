@@ -77,6 +77,10 @@ data class AppSettings(
     val voice: VoicePreferences = VoicePreferences(),
     val permissions: Map<ActionCategory, PermissionPolicy> = emptyMap(),
     val historyEnabled: Boolean = true,
+    /** Después de responder sigue escuchando sin la palabra de activación. */
+    val conversationMode: Boolean = true,
+    /** Cuántos segundos de silencio cierran la conversación (4 a 15). */
+    val followUpSeconds: Int = 8,
     val onboardingDone: Boolean = false,
 ) {
     fun policy(category: ActionCategory): PermissionPolicy =
