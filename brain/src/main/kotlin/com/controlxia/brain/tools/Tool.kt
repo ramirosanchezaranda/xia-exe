@@ -15,6 +15,12 @@ interface Tool {
     val category: ActionCategory
 
     /**
+     * Categoría para esta llamada en particular: por ejemplo, tocar un botón
+     * común es [category], pero tocar «Enviar» o «Comprar» es SENSITIVE.
+     */
+    fun categoryFor(args: JsonObject): ActionCategory = category
+
+    /**
      * Si es true y es la única acción del pedido, su resultado se dice tal
      * cual sin volver a consultar al LLM (ahorra un viaje de ida y vuelta).
      */

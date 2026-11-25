@@ -26,6 +26,11 @@ enum class ActionCategory(
     POWER("Energía", "Suspender, reiniciar y apagar", PermissionPolicy.ASK),
     SCREEN_READ("Ver la pantalla", "Sacar una captura y enviarla al LLM", PermissionPolicy.ASK),
     INPUT_CONTROL("Mouse y teclado", "Mover el mouse, hacer clic y escribir", PermissionPolicy.ASK),
+    SCREEN_CONTROL("Controlar programas", "Tocar botones y escribir en la ventana activa por accesibilidad", PermissionPolicy.ALLOW),
+    PROGRAM_READ("Programas (MCP): consultar", "Herramientas de programas que solo leen", PermissionPolicy.ALLOW),
+    PROGRAM_CHANGE("Programas (MCP): cambiar", "Herramientas de programas que crean, editan o borran", PermissionPolicy.ASK),
+    INSTALL("Instalar integraciones", "Instalar programas o integraciones MCP", PermissionPolicy.ASK),
+    SENSITIVE("Botones delicados", "Tocar Enviar, Comprar, Pagar, Publicar o Borrar en un programa", PermissionPolicy.ASK),
 }
 
 /** Origen de las políticas guardadas por el usuario. */

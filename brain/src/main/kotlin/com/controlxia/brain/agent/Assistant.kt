@@ -14,6 +14,8 @@ import com.controlxia.brain.tools.Confirmer
 import com.controlxia.brain.tools.PermissionPolicy
 import com.controlxia.brain.tools.PermissionStore
 import com.controlxia.brain.tools.Tool
+import com.controlxia.brain.tools.ToolGroup
+import com.controlxia.brain.tools.ToolRouter
 import com.controlxia.brain.tools.ToolResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -55,7 +57,16 @@ class Assistant(
     private val systemPrompt: () -> String,
     private val providerFactory: (LlmConfig) -> LlmProvider = LlmProviderFactory::create,
     private val maxSteps: Int = 15,
+    /**
+     * Herramientas agrupadas. Si se da, reemplaza a [tools]: en cada pedido
+     * van solo los grupos que corresponden (y los usados hace poco), más
+     * `load_tools` para que el modelo pida otro si le falta.
+     */
+    private val toolGroups: (() -> List<ToolGroup>)? = null,
 ) {
+
+    /** Grupos usados en los últimos pedidos: siguen disponibles para "y ahora…". */
+    private val recentGroups = ArrayDeque<Set<String>>()
 
     val memory = ConversationMemory()
     private val mutex = Mutex()
@@ -72,14 +83,33 @@ class Assistant(
             )
         }
 
-        val available = tools().filter { permissions.policy(it.category) != PermissionPolicy.BLOCK }
-        val byName = available.associateBy { it.spec.name }
-        val specs = available.map { it.spec }
+        val groups = toolGroups?.invoke()?.map { g ->
+            g.copy(tools = g.tools.filter { permissions.policy(it.category) != PermissionPolicy.BLOCK })
+        }?.filter { it.tools.isNotEmpty() }
+        val activeGroups = mutableSetOf<String>()
+        if (groups != null) {
+            activeGroups += groups.filter { it.alwaysOn }.map { it.id }
+            activeGroups += ToolRouter.matching(command, groups)
+            recentGroups.forEach { activeGroups += it }
+        }
+        val plainTools = if (groups == null) tools().filter { permissions.policy(it.category) != PermissionPolicy.BLOCK } else emptyList()
+
+        /** Las herramientas de este paso (cambian si el modelo carga un grupo). */
+        fun currentTools(): List<Tool> {
+            if (groups == null) return plainTools
+            val active = groups.filter { it.id in activeGroups }.flatMap { it.tools }.distinctBy { it.spec.name }
+            val inactive = groups.filter { it.id !in activeGroups }
+            return if (inactive.isEmpty()) active else active + ToolRouter.loadTool(inactive) { id ->
+                groups.firstOrNull { it.id == id }?.also { activeGroups += it.id }
+            }
+        }
         val actions = mutableListOf<ExecutedAction>()
         // Dentro de un mismo pedido, una categoría confirmada no se vuelve a preguntar.
         val approved = mutableSetOf<ActionCategory>()
         // Cuántas veces se pidió cada acción idéntica en este pedido.
         val repeats = mutableMapOf<String, Int>()
+        var checked = false
+        var claimedText: String? = null
 
         memory.startTurn(command)
 
@@ -89,11 +119,27 @@ class Assistant(
                     add(ChatMessage(ChatRole.SYSTEM, systemPrompt()))
                     addAll(memory.history())
                 }
-                val response = completeWithFallback(configs, messages, specs)
+                val stepTools = currentTools()
+                val byName = stepTools.associateBy { it.spec.name }
+                val response = completeWithFallback(configs, messages, stepTools.map { it.spec }, onProgress)
                 memory.add(response.assistantMessage)
 
                 if (response.toolCalls.isEmpty()) {
-                    val spoken = toSpeakable(response.text).ifBlank { "Listo." }
+                    // El modelo contestó "OK" al control: vale la respuesta anterior.
+                    val text = if (claimedText != null && response.text.trim().trimEnd('.').equals("ok", ignoreCase = true)) {
+                        claimedText!!
+                    } else {
+                        response.text
+                    }
+                    if (!checked && TaskCheck.claimsUndoneAction(command, text, actions.count { it.tool != ToolRouter.LOAD_TOOLS })) {
+                        checked = true
+                        claimedText = text
+                        memory.add(ChatMessage(ChatRole.USER, TaskCheck.NUDGE))
+                        onProgress("Comprobando…")
+                        return@repeat
+                    }
+                    rememberGroups(groups, activeGroups, actions)
+                    val spoken = toSpeakable(text).ifBlank { "Listo." }
                     return AssistantReply(spoken, actions)
                 }
 
@@ -181,19 +227,23 @@ class Assistant(
         tool: Tool,
         call: ToolCall,
         approved: MutableSet<ActionCategory>,
-    ): ExecutedAction? = when (permissions.policy(tool.category)) {
-        PermissionPolicy.ALLOW -> null
-        PermissionPolicy.BLOCK -> ExecutedAction(
-            call.name, call.arguments, "Acción bloqueada por el usuario en la configuración.", ActionStatus.BLOCKED,
-        )
-        PermissionPolicy.ASK -> {
-            if (tool.category in approved) {
-                null
-            } else if (confirmer.confirm(tool.confirmationQuestion(call.arguments))) {
-                approved += tool.category
-                null
-            } else {
-                ExecutedAction(call.name, call.arguments, "El usuario no autorizó la acción.", ActionStatus.DENIED)
+    ): ExecutedAction? {
+        val category = tool.categoryFor(call.arguments)
+        return when (permissions.policy(category)) {
+            PermissionPolicy.ALLOW -> null
+            PermissionPolicy.BLOCK -> ExecutedAction(
+                call.name, call.arguments, "Acción bloqueada por el usuario en la configuración.", ActionStatus.BLOCKED,
+            )
+            PermissionPolicy.ASK -> {
+                // Lo delicado (enviar, comprar, borrar) se pregunta cada vez, no una por pedido.
+                if (category in approved && category != ActionCategory.SENSITIVE) {
+                    null
+                } else if (confirmer.confirm(tool.confirmationQuestion(call.arguments))) {
+                    approved += category
+                    null
+                } else {
+                    ExecutedAction(call.name, call.arguments, "El usuario no autorizó la acción.", ActionStatus.DENIED)
+                }
             }
         }
     }
@@ -208,21 +258,50 @@ class Assistant(
 
     private companion object {
         const val MAX_IDENTICAL_CALLS = 2
+        /** Hasta cuánto se espera si el proveedor pide esperar (límite por minuto de Groq). */
+        const val MAX_WAIT_MS = 25_000L
     }
 
     private suspend fun completeWithFallback(
         configs: List<LlmConfig>,
         messages: List<ChatMessage>,
         specs: List<ToolSpec>,
+        onProgress: (String) -> Unit,
     ): LlmResponse {
         var firstError: LlmException? = null
-        for (config in configs) {
+        for ((index, config) in configs.withIndex()) {
             try {
                 return providerFactory(config).complete(messages, specs)
             } catch (e: LlmException) {
                 if (firstError == null) firstError = e
+                // Sin respaldo que probar: si el proveedor pide esperar poco, se espera y se reintenta una vez.
+                val wait = e.retryAfterMs
+                if (index == configs.lastIndex && e.statusCode == 429 && wait != null && wait <= MAX_WAIT_MS) {
+                    onProgress("El proveedor pide esperar ${(wait + 999) / 1000} s…")
+                    kotlinx.coroutines.delay(wait + 500)
+                    return try {
+                        providerFactory(config).complete(messages, specs)
+                    } catch (again: LlmException) {
+                        throw firstError
+                    }
+                }
             }
         }
         throw firstError ?: LlmException("Sin proveedores de LLM")
+    }
+
+    /** Anota en la memoria un pedido que se resolvió sin el modelo, para que el siguiente lo sepa. */
+    fun remember(command: String, reply: String) {
+        memory.startTurn(command)
+        memory.add(ChatMessage(ChatRole.ASSISTANT, reply))
+    }
+
+    /** Recuerda los grupos que se usaron (por 3 pedidos) para que sigan a mano en la conversación. */
+    private fun rememberGroups(groups: List<ToolGroup>?, active: Set<String>, actions: List<ExecutedAction>) {
+        if (groups == null) return
+        val usedNames = actions.map { it.tool }.toSet()
+        val used = groups.filter { g -> !g.alwaysOn && g.id in active && g.tools.any { it.spec.name in usedNames } }.map { it.id }.toSet()
+        recentGroups.addLast(used)
+        while (recentGroups.size > 3) recentGroups.removeFirst()
     }
 }
