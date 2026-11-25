@@ -3,6 +3,7 @@ package com.controlxia.windows.config
 import com.controlxia.brain.llm.LlmProviderType
 import com.controlxia.brain.tools.ActionCategory
 import com.controlxia.brain.tools.PermissionPolicy
+import com.controlxia.windows.mcp.McpServerConfig
 import com.controlxia.windows.voice.WhisperModel
 import kotlinx.serialization.Serializable
 
@@ -94,6 +95,12 @@ data class AppSettings(
     val llm: LlmPreferences = LlmPreferences(),
     val voice: VoicePreferences = VoicePreferences(),
     val stt: SttPreferences = SttPreferences(),
+    /** Dejar que la app del teléfono maneje esta PC por la red de casa. */
+    val phoneLink: Boolean = false,
+    /** Nombre con el que aparece la PC en el teléfono; vacío = nombre de Windows. */
+    val pcName: String = "",
+    /** Servidores MCP configurados (integraciones con programas). */
+    val mcpServers: List<McpServerConfig> = emptyList(),
     val permissions: Map<ActionCategory, PermissionPolicy> = emptyMap(),
     val historyEnabled: Boolean = true,
     /** Después de responder sigue escuchando sin la palabra de activación. */

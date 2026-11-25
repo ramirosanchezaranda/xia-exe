@@ -57,11 +57,6 @@ class AppTools(private val shell: PowerShellHost) {
             schema { string("folder", "Nombre de la carpeta conocida o ruta completa", required = true) },
             progress = { "Abriendo ${it.str("folder")}…" },
         ) { args -> openFolder(args.str("folder")) },
-        tool(
-            "list_open_windows",
-            "Lista las ventanas abiertas (programa y título). Útil antes de cerrar o cambiar de ventana.",
-            ActionCategory.INFO,
-        ) { ToolResult(openWindows().joinToString("\n") { "${it.processName}: ${it.title}" }.ifBlank { "No hay ventanas abiertas" }) },
     )
 
     suspend fun open(name: String): ToolResult {

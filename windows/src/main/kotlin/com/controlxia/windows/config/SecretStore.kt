@@ -25,6 +25,7 @@ interface SecretStore {
         fun llmKey(type: com.controlxia.brain.llm.LlmProviderType) = "llm.${type.name}"
         const val PORCUPINE_ACCESS_KEY = "porcupine.accessKey"
         const val STT_CLOUD_KEY = "stt.cloud"
+        const val PHONE_CODE = "phone.code"
     }
 }
 

@@ -28,6 +28,15 @@ import com.controlxia.windows.voice.VoskSpeechToText
 import com.controlxia.windows.voice.VoskWakeWord
 import com.controlxia.windows.voice.WakeWordEngine
 import com.controlxia.brain.llm.ModelCapabilities
+import com.controlxia.brain.tools.ToolGroup
+import com.controlxia.brain.tools.ToolRouter
+import com.controlxia.windows.actions.ScreenElement
+import com.controlxia.windows.actions.ScreenSnapshot
+import com.controlxia.windows.mcp.McpManager
+import com.controlxia.windows.phone.PhoneAnswer
+import com.controlxia.windows.phone.PhoneLink
+import com.controlxia.windows.phone.PhoneProtocol
+import com.controlxia.windows.platform.Win32
 import com.controlxia.windows.config.SttEngine
 import com.controlxia.windows.voice.CloudWhisper
 import com.controlxia.windows.voice.LocalWhisper
@@ -92,6 +101,8 @@ data class AssistantUi(
     val voiceInputReady: Boolean = false,
     /** Quién transcribe: "Whisper en la nube (…)", "Vosk", o el problema. */
     val transcriberStatus: String = "",
+    /** Elementos numerados que se muestran sobre la ventana activa ("mostrá los números"). */
+    val numbers: List<ScreenElement> = emptyList(),
     val overlayVisible: Boolean = false,
 )
 
@@ -118,6 +129,20 @@ class AssistantController(
     private val hotkey = GlobalHotkey { activate() }
     val timers = TimerService(scope)
     private val toolset = WindowsToolset(shell, scope, timers)
+    val mcp = McpManager(settings, secrets, scope) { toolset.apps.apps().map { it.name } }
+    private var numbersJob: Job? = null
+    private val direct = DirectRunner(
+        toolset = toolset,
+        policy = { settings.current.policy(it) },
+        confirm = { askConfirmation(it) },
+        showNumbers = { snapshot -> showNumbers(snapshot) },
+    )
+    val phone = PhoneLink(
+        scope = scope,
+        name = { pcName() },
+        code = { phoneCode() },
+        handle = { cmd, arg -> handlePhone(cmd, arg) },
+    )
 
     private var stt: SpeechToText? = null
     @Volatile private var transcriber: Transcriber? = null
@@ -139,13 +164,20 @@ class AssistantController(
 
     val assistant = Assistant(
         llmConfigs = { llm.activeChain() },
-        tools = { visibleTools() },
+        tools = { emptyList() },
         permissions = { settings.current.policy(it) },
         confirmer = confirmer,
         systemPrompt = { systemPrompt(settings.current) },
+        toolGroups = { toolGroups() },
     )
 
     fun start() {
+        mcp.start()
+        scope.launch {
+            settings.state.map { it.phoneLink }.distinctUntilChanged().collect { on ->
+                if (on) phone.start() else phone.stop()
+            }
+        }
         timers.onFire = ::onAlert
         timers.restore()
         scope.launch { toolset.apps.warmUp() }
@@ -240,11 +272,83 @@ class AssistantController(
         _ui.update { it.copy(transcriberStatus = status) }
     }
 
-    private fun visibleTools(): List<com.controlxia.brain.tools.Tool> {
+    /**
+     * Grupos de herramientas para el modelo: los de Windows, uno por cada
+     * programa conectado por MCP y el de integraciones.
+     */
+    private fun toolGroups(): List<ToolGroup> {
         val primary = llm.activeChain().firstOrNull()
-        val vision = primary != null && ModelCapabilities.supportsVision(primary.type, primary.model)
         // Sin visión, el modelo no puede ver capturas: ni se le ofrecen ni el mouse por coordenadas.
-        return if (vision) toolset.all else toolset.all.filterNot { it.spec.name in VISION_TOOLS }
+        val vision = primary != null && ModelCapabilities.supportsVision(primary.type, primary.model)
+        val integrations = ToolGroup(
+            "integraciones", "instalar o desconectar integraciones con programas (MCP)",
+            listOf("integracion", "integraciones", "mcp", "instala", "conecta", "desconecta", "plugin", "complemento", "extension"),
+            mcp.voiceTools(),
+        )
+        return toolset.groups(vision, mcp.toolGroups() + integrations)
+    }
+
+    // ------------------------------------------------------------ Teléfono
+
+    fun pcName(): String = settings.current.pcName.ifBlank { System.getenv("COMPUTERNAME") ?: "PC" }
+
+    /** El código de vinculación; se crea la primera vez. */
+    fun phoneCode(): String = secrets.get(SecretStore.PHONE_CODE).ifBlank {
+        PhoneProtocol.newCode().also { secrets.set(SecretStore.PHONE_CODE, it) }
+    }
+
+    fun newPhoneCode(): String = PhoneProtocol.newCode().also { secrets.set(SecretStore.PHONE_CODE, it) }
+
+    /** Marca los pedidos que llegan del teléfono: nadie en la PC puede confirmar. */
+    private object RemoteRequest : kotlin.coroutines.AbstractCoroutineContextElement(Key) {
+        object Key : kotlin.coroutines.CoroutineContext.Key<RemoteRequest>
+    }
+
+    /** Pedidos del teléfono: los mismos que el script ControlXIA-PC.ps1, más "ask" (un pedido libre a Xia). */
+    private suspend fun handlePhone(cmd: String, arg: String): PhoneAnswer {
+        fun times(default: Int) = arg.toIntOrNull()?.takeIf { it in 1..50 } ?: default
+        return when (cmd) {
+            "ping" -> PhoneAnswer(true, "ok")
+            "shutdown" -> PhoneAnswer(true, "apagando") { ProcessBuilder("shutdown", "/s", "/t", "5").start() }
+            "restart" -> PhoneAnswer(true, "reiniciando") { ProcessBuilder("shutdown", "/r", "/t", "5").start() }
+            "sleep" -> PhoneAnswer(true, "suspendiendo") { scope.launch { runCatching { toolset.power.suspend() } } }
+            "lock" -> { Win32.lockWorkstation(); PhoneAnswer(true, "bloqueada") }
+            "volume_up" -> { repeat(times(5)) { Win32.tapVirtualKey(Win32.VK_VOLUME_UP) }; PhoneAnswer(true, "ok") }
+            "volume_down" -> { repeat(times(5)) { Win32.tapVirtualKey(Win32.VK_VOLUME_DOWN) }; PhoneAnswer(true, "ok") }
+            "mute" -> { Win32.tapVirtualKey(Win32.VK_VOLUME_MUTE); PhoneAnswer(true, "ok") }
+            "play_pause" -> { Win32.tapVirtualKey(Win32.VK_MEDIA_PLAY_PAUSE); PhoneAnswer(true, "ok") }
+            "next" -> { Win32.tapVirtualKey(Win32.VK_MEDIA_NEXT_TRACK); PhoneAnswer(true, "ok") }
+            "previous" -> { Win32.tapVirtualKey(Win32.VK_MEDIA_PREV_TRACK); PhoneAnswer(true, "ok") }
+            "open" -> if (Regex("^https?://", RegexOption.IGNORE_CASE).containsMatchIn(arg)) {
+                runCatching { java.awt.Desktop.getDesktop().browse(java.net.URI(arg)) }
+                PhoneAnswer(true, "ok")
+            } else {
+                PhoneAnswer(false, "solo abro paginas web")
+            }
+            // Nuevo: un pedido cualquiera para Xia ("abrí Spotify en la compu"). Se contesta al toque
+            // (el teléfono espera 5 s) y se hace en la PC; lo que pide confirmación no se hace.
+            "ask" -> if (arg.isBlank()) PhoneAnswer(false, "pedido vacio") else {
+                scope.launch(RemoteRequest) {
+                    startConversationIfNeeded()
+                    handleCommand("📱 " + arg.take(500))
+                    _ui.update { it.copy(phase = idlePhase()) }
+                    scheduleHide()
+                }
+                PhoneAnswer(true, "recibido")
+            }
+            else -> PhoneAnswer(false, "no conozco ese pedido")
+        }
+    }
+
+    private fun showNumbers(snapshot: ScreenSnapshot?) {
+        numbersJob?.cancel()
+        _ui.update { it.copy(numbers = snapshot?.elements.orEmpty()) }
+        if (snapshot != null && snapshot.elements.isNotEmpty()) {
+            numbersJob = scope.launch {
+                delay(NUMBERS_VISIBLE_MS)
+                _ui.update { it.copy(numbers = emptyList()) }
+            }
+        }
     }
 
     private fun buildWakeEngine(s: AppSettings, model: org.vosk.Model?): Pair<WakeWordEngine?, String> {
@@ -412,6 +516,20 @@ class AssistantController(
                 response = "", status = "Pensando…", confirmQuestion = null,
             )
         }
+        // Lo cotidiano se resuelve sin el modelo: al instante y sin gastar tokens.
+        DirectCommands.parse(text, settings.current.agentName, _ui.value.numbers.isNotEmpty())?.let { command ->
+            val answer = runCatching { direct.run(command) }.onFailure { Log.e("Comando directo", it) }.getOrNull()
+            if (answer != null) {
+                assistant.remember(text, answer)
+                if (settings.current.historyEnabled) {
+                    history.add(HistoryEntry(System.currentTimeMillis(), text, answer, listOf("directo"), conversationId.orEmpty()))
+                }
+                addLine(ChatLine(Speaker.ASSISTANT, answer))
+                _ui.update { it.copy(phase = Phase.SPEAKING, response = answer, status = "") }
+                say(answer)
+                return
+            }
+        }
         val reply = assistant.process(text) { progress -> _ui.update { it.copy(status = progress) } }
         if (settings.current.historyEnabled) {
             history.add(
@@ -425,7 +543,7 @@ class AssistantController(
             )
         }
         reply.error?.let { Log.e("Asistente: $it") }
-        addLine(ChatLine(Speaker.ASSISTANT, reply.spoken, reply.actions.map { it.result }))
+        addLine(ChatLine(Speaker.ASSISTANT, reply.spoken, reply.actions.filter { it.tool != ToolRouter.LOAD_TOOLS }.map { it.result.lineSequence().first().take(120) }))
         _ui.update { it.copy(phase = Phase.SPEAKING, response = reply.spoken, status = "") }
         say(reply.spoken)
     }
@@ -482,6 +600,10 @@ class AssistantController(
     }
 
     private suspend fun askConfirmation(question: String): Boolean {
+        if (kotlin.coroutines.coroutineContext[RemoteRequest.Key] != null) {
+            addLine(ChatLine(Speaker.ASSISTANT, "No hice «$question»: los pedidos del teléfono no pueden confirmar."))
+            return false
+        }
         val answer = CompletableDeferred<Boolean>()
         pendingConfirmation = answer
         val previous = _ui.value.phase
@@ -545,6 +667,8 @@ class AssistantController(
         tts.stop()
         (tts as? SapiTextToSpeech)?.close()
         localWhisper?.close()
+        mcp.stopAll()
+        phone.stop()
         shell.close()
         scope.cancel()
     }
@@ -572,6 +696,9 @@ class AssistantController(
             o compras sin que el usuario lo haya pedido explícitamente.
 
             Hacé las cosas vos con las herramientas: no le expliques al usuario los pasos para que los haga él.
+            Para manejar un programa sin ver la pantalla, usá screen_read (lista numerada de botones y campos de
+            la ventana activa), screen_tap y screen_type; para atajos comunes (pestañas, guardar, copiar), app_command.
+            Si no tenés la herramienta que hace falta, pedila con load_tools antes de decir que no podés.
             Si te falta un dato (por ejemplo, el nombre de un archivo), preguntalo en una sola frase corta.
             Si una acción fue cancelada o bloqueada por el usuario, no la reintentes por otro camino.
             Al terminar, resumí en una frase lo que hiciste.
@@ -586,7 +713,7 @@ class AssistantController(
         const val MAX_CHAT_LINES = 40
         /** Menos de 0,3 s de audio no vale la pena mandarlo a Whisper. */
         const val MIN_WHISPER_SAMPLES = 4_800
-        val VISION_TOOLS = setOf("look_at_screen", "mouse_click", "mouse_move")
+        const val NUMBERS_VISIBLE_MS = 30_000L
         const val SETTINGS_DEBOUNCE_MS = 800L
     }
 }

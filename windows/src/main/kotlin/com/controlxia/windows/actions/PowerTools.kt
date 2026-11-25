@@ -59,6 +59,14 @@ class PowerTools(private val shell: PowerShellHost, private val scope: Coroutine
         },
     )
 
+    /** Suspende la PC ya. */
+    suspend fun suspend() {
+        shell.run(
+            "Add-Type -AssemblyName System.Windows.Forms; " +
+                "[void][System.Windows.Forms.Application]::SetSuspendState('Suspend', \$false, \$false)",
+        )
+    }
+
     /** Deja unos segundos para que se diga la respuesta antes de ejecutar. */
     private fun delayed(action: suspend () -> Unit) {
         scope.launch {
